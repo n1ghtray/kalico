@@ -67,6 +67,7 @@ class ToolsCalibrate:
         self.lift_speed = config.getfloat(
             "lift_speed", self.probe_multi_axis.lift_speed
         )
+        
         self.final_lift_z = config.getfloat("final_lift_z", 4.0)
 
         self._reset_last_results(None)
