@@ -1,3 +1,5 @@
+# This file may be distributed under the terms of the GNU GPLv3 license.
+
 import serial
 import logging
 import json
@@ -9,53 +11,75 @@ from serial import SerialException
 INKJET_CONNECT
 INKJET_ENABLE
 INKJET_SET_DIRECTORY=dir
-INKJET SET_LAYER=0
+INKJET_SET_LAYER=0
 INKJET_PRINT
 INKJET_PURGE
 INKJET_DISABLE
 INKJET_DISCONNECT
 '''
 
+
+'''
+How does this works?
+A 
+
+
+'''
+
+
+
+
 class Inkjet:
     def __init__(self, config):
+                
+
 
 
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.gcode = self.printer.lookup_object("gcode")
-        self.toolhead = self.printer.lookup_object("toolhead")
 
+        self.printer.register_event_handler("klippy:ready", self._handle_connect)
+
+        self.gcode = self.printer.lookup_object("gcode")
+
+        self.toolhead = None
         self.enabled = False
 
         #3d printing related
         self.current_layer = None
 
+
         #printhead related
-        self.x_offset = config.getfloat("x_offset")
-        self.y_offset = config.getfloat("y_offset")
-        self.z_lift = config.getfloat("z_lift")
-        self.z_inkprinting_offset = config.getfloat("z_offset")
-        self.speed = config.getfloat("speed")
-        self.accel = config.getfloat("accel")
-        self.accel_margin = config.getfloat("accel_margin")
-        self.print_axis = config.get("print_axis")
-        self.pass_height = config.getfloat("pass_height")
+        self.x_offset = config.getfloat("x_offset", 10) #x offset between printhead and toolhead
+        self.y_offset = config.getfloat("y_offset", 10) #y offset between printhead and toolhead
+        self.z_offset = config.getfloat("z_offset", 10) #z offset between printhead and 3d print
 
-        #printhead controller board settings
-        self.accel_delay = config.get("accel_delay")
-        self.rows_delay = config.get("rows_delay")
+        self.z_lift = config.getfloat("z_lift", 1) #z lift between non-inking movements
+        self.z_lift_speed = config.getfloat("z_lift_speed", 20) #z lift between non-inking movements
 
-        #2d printing related
-        self.is_printing = False
-        self.start_layer = config.get("start_layer")
 
-        #serial connection related
-        self.con = None
-        self.serial = config.get("serial")
-        self.trigger_pin = config.get("trigger_pin")
+        self.inking_speed = config.getfloat("inking_speed", 50) #inking speed
+        self.inking_accel = config.getfloat("inking_accel", 50) #inking acceleration
+        self.inking_accel_margin = config.getfloat("inking_accel_margin", 10) #margin to printhead accelerate
+        self.inking_axis = config.get("inking_axis", "x") #axis for printhead passes
+        self.inking_pass_height = config.getfloat("inking_pass_height", 5.4) #pass height
 
-        #2d printing data related
-        self.pictures_base_path = config.get("pictures_base_path") #/home/pi/printer_data/gcode_ink/
+        #printhead controller board
+        self.inking_accel_delay = config.getfloat("inking_accel_delay", 100) #time that it takes to achive constant speed
+        self.inking_columns_delay = config.getfloat("inking_columns_delay", 100) #delay between each columns of each pass
+
+        self.inking_is_printing = False
+        self.inking_start_layer = config.getint("inking_start_layer", 2) #the first layer that enables inking
+
+        self.positioning_speed = config.getfloat("positioning_speed", 100) #speed for positioning movements
+        self.positioning_accel = config.getfloat("positioning_accel", 1000) #acceleration for positioning movements
+        self.position_before_2d_printing = None
+
+        self.conn = None
+        self.serial = config.get("serial", "test") #serial port path
+        self.trigger_pin = config.get("trigger_pin", "test")
+
+        self.pictures_base_path = config.get("pictures_base_path", "home/pi/printer_data/gcode_ink/")
         self.pictures_directory = None
         self.current_layer_data = None
         self.current_layer_passes = None
@@ -72,14 +96,18 @@ class Inkjet:
         self.gcode.register_command("INKJET_DISCONNECT", self.disconnect)
         self.gcode.register_command("INKJET_SET_DIRECTORY", self.set_directory)
         self.gcode.register_command("INKJET_SET_LAYER", self.set_layer)
+        self.gcode.register_command("INKJET_PRINT", self.print_layer)
+
+    def _handle_connect(self):
+        self.toolhead = self.printer.lookup_object("toolhead")
 
     def connect(self, gcmd):
         gcmd.respond_info("connect")
-        if self.serial:
+        if self.conn:
             gcmd.respond_info("Already connected")
             return
         try:
-            self.serial = serial.Serial(self.serial_port, 115200) #timeout=0, write_timeout=0
+            self.conn = serial.Serial(self.serial, 115200) #timeout=0, write_timeout=0
             gcmd.respond_info("Connected!")
         except SerialException:
             gcmd.respond_info("Unable to connect")
@@ -88,16 +116,16 @@ class Inkjet:
     def enable(self, gcmd):
         gcmd.respond_info("enable")
         self.enabled = True
-        self.get_2d_print_bounds()
+        self.get_2d_print_bounds(gcmd)
         return
         
     def configure(self, gcmd):
         gcmd.respond_info("configure")
         #write settings to the printhead controller board
         try:
-            self.serial.write("SET_ACCEL_DELAY {}".format(self.accel_delay).encode())
+            self.conn.write("SET_ACCEL_DELAY {}".format(self.accel_delay).encode())
             time.sleep(0.001)
-            self.serial.write("SET_ROW_DELAY {}".format(self.rows_delay).encode())
+            self.conn.write("SET_ROW_DELAY {}".format(self.rows_delay).encode())
             time.sleep(0.001)
             gcmd.respond_info("Board configurated")
         except SerialException:
@@ -109,11 +137,11 @@ class Inkjet:
         self.enabled = False
         return
 
-    def disconnect(self, gcmd=None):
+    def disconnect(self, gcmd):
         gcmd.respond_info("disconnect")
-        if self.serial:
-            self.serial.close()
-            self.serial = None
+        if self.conn:
+            self.conn.close()
+            self.conn = None
             gcmd.respond_info("Disconnected")
         return
 
@@ -144,8 +172,10 @@ class Inkjet:
     def write_layer_pass_to_board(self, gcmd, pass_data):
         gcmd.respond_info("write_layer_pass_to_board")
         #send the pass data to the printhead controller board
+        self.conn.write("CLEAR_PIC\n".encode())
+        time.sleep(0.001)
         for i in pass_data:
-            self.serial.write(i.encode())
+            self.conn.write("SET_PIC 0x{} \n".format(i).encode())
             time.sleep(0.001)
         self.is_pass_loaded = True
         return
@@ -155,7 +185,8 @@ class Inkjet:
         #position the printhead at the starting position for the first pass
         first_pass_starting_x_coord = self.print_mesh_min[0] + self.x_offset - self.accel_margin
         first_pass_starting_y_coord = self.print_mesh_min[1] + self.y_offset
-        self.toolhead.manual_move([first_pass_starting_x_coord, first_pass_starting_y_coord, self.lift_z], self.lift_speed)
+        self.toolhead.manual_move([None, None, self.lift_z], self.z_lift_speed)
+        self.toolhead.manual_move([first_pass_starting_x_coord, first_pass_starting_y_coord, None], self.positioning_speed)
         return
     
     def trigger_print(self,gcmd):
@@ -166,17 +197,26 @@ class Inkjet:
     def print_layer(self,gcmd):
         gcmd.respond_info("print_layer")
         #print an entire layer
-        self.move_toolhead_to_2d_print_starting_point()
+        self.position_before_2d_printing = self.toolhead.get_position()
+        self.move_printhead_to_starting_point(gcmd)
         for pass_data,ix in self.current_layer_data:
              gcmd.respond_info("loading pass %s" % (ix))
              self.write_layer_pass_to_board(pass_data)
              self.print_pass()
-             self.prepare_next_pass()
+             if ix != len(self.current_layer_data):
+                self.prepare_next_pass()
+        self.toolhead.manual_move([self.position_before_2d_printing[0], self.position_before_2d_printing[1], None], self.positioning_speed)
+        self.toolhead.manual_move([None, None, self.position_before_2d_printing[2]], self.z_lift_speed)
+
+    def purge(self,gcmd):
+        return
 
     def print_pass(self,gcmd):
         gcmd.respond_info("print_pass")
         self.trigger_print()
-        self.toolhead.manual_move([self.print_mesh_max[0]])
+        printhead_starting_position = self.toolhead.get_position()
+        printhead_pass_end_position = [printhead_starting_position[0] + (self.print_mesh_max[0] - self.print_mesh_min[0]),None,None]
+        self.toolhead.manual_move([printhead_pass_end_position], self.inking_speed)
         return
     
     def prepare_next_pass(self,gcmd):
@@ -213,3 +253,7 @@ def load_config(config):
 #para testes, vamos fazer o seguinte: um retângulo impresso, com dimensões  77mm x 55mm x 50mm, começando a imprimir 2d na camada 4, altura de camada 0.1mm.
 #teoricamente, a imagem precisa ter, sem considerar as margens devido às 3 cores separadas, 909 pixels de largura (300 DPI) e 650 (300 DPI) pixels de altura.
 #teremos 496 imagens, uma para cada camada impressa.
+
+
+#return_pos = self.toolhead.get_position()
+#self.toolhead.manual_move([x, y, None], speed)
