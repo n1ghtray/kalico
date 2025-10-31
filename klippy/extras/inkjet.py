@@ -25,7 +25,7 @@ class Inkjet:
         self.print_speed = config.getfloat("print_speed")
         self.print_accel = config.getfloat("print_accel")
         self.overscan = config.getfloat("overscan")
-        self.fire_lead_us = config.getfloat("fire_lead_ms")
+        self.fire_lead_us = config.getfloat("fire_lead_us")
         self.column_fire_interval_us = config.getfloat("column_fire_interval_us")
         #self.swath_axis = config.get("swath_axis")
 
@@ -270,7 +270,7 @@ class Inkjet:
         for swath_id in range(self.total_swaths):
 
             self.execute_swath_pass()
-            if (swath_id != self.total_swaths):
+            if (swath_id < self.total_swaths - 1):
                 self.prepare_next_swath()
 
         self.return_to_stored_position()
@@ -287,3 +287,11 @@ class Inkjet:
     
     def load_swath_data(self):
         return
+    
+    def set_swath_data(self):
+        return
+    
+# TODO
+# Override no print_origin em caso de enviar posicionamentos no INKJET_GET_BOUNDS
+# Implementar envio de dados
+# Utilizar mesh z (manual_move -> G1)
