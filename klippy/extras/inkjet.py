@@ -5,7 +5,7 @@ def load_config(config):
     return Inkjet(config)
 
 class Inkjet:
-    def _init__(self, config):
+    def __init__(self, config):
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
@@ -64,10 +64,7 @@ class Inkjet:
         reg("INKJET_CLOSE", self.cmd_close,desc="")
         reg("INKJET_CLEAR", self.cmd_clear,desc="")
         reg("INKJET_GET_BOUNDS", self.cmd_get_bounds,desc="")
-        reg("INKJET_PRINT", self.cmd_json_move,
-            desc=("Z-first: move com validação para positions[INDEX]. "
-                  "Args: INDEX=<n> [DRYRUN=1] [F=<mm/min>] [SPEED=<mm/s>] "
-                  "[FZ=<mm/min>] [FXY=<mm/min>] [SAFE_Z=<mm>]"))
+        reg("INKJET_PRINT", self.cmd_print,desc=(""))
 
     # --- LIFECICLE --- #
 
@@ -86,7 +83,7 @@ class Inkjet:
 
     def open_serial(self):
         try:
-            self.ser = serial.Serial(self.serial_port, self.baud, timeout=1)
+            self.ser = serial.Serial(self.serial_port, 115200, timeout=1)
         except Exception as e:
             raise self.gcode.error(f"ERROR")
         return
@@ -111,7 +108,7 @@ class Inkjet:
         return
 
     def cmd_disconnect(self, gcmd):
-        if self._ser is None:
+        if self.ser is None:
             return
         self.close_serial()
         return
@@ -124,7 +121,7 @@ class Inkjet:
 
     def cmd_set_directory(self, gcmd):
         directory = gcmd.get("DIRECTORY")
-        self.set_directory(self, directory)
+        self.set_directory(directory)
         self.gcode.respond_info(f"OK", log=True)
         return
 
@@ -149,7 +146,7 @@ class Inkjet:
         filename = gcmd.get("FILENAME")
         if not filename:
             raise gcmd.error("ERROR")
-        self.open_file(self, filename)
+        self.open_file(filename)
         self.gcode.respond_info(f"OK", log=True)
         return
 
@@ -239,7 +236,7 @@ class Inkjet:
         pos = self.toolhead.get_position()
         self.toolhead.manual_move([None, None, pos[2] + self.z_lift], self.z_lift_speed)
         self.toolhead.wait_moves()
-        self.move_to_swath_start(self,0)
+        self.move_to_swath_start(0)
         return
     
     def store_position(self):
@@ -261,25 +258,28 @@ class Inkjet:
     def prepare_next_swath(self):
         self.current_swath_id += 1
         self.load_swath_data()
-        self.move_to_swath_start(self, self.current_swath_id)
+        self.move_to_swath_start(self.current_swath_id)
         return
     
     def execute_print_job(self):
         self.current_swath_id = 0
         self.store_position()
         self.move_to_print_origin()
-        self.load_swath_data(self)
+        self.load_swath_data()
 
         for swath_id in range(self.total_swaths):
 
             self.execute_swath_pass()
-            if (swath_id < self.total_swaths):
+            if (swath_id != self.total_swaths):
                 self.prepare_next_swath()
 
         self.return_to_stored_position()
         return
     
-
+    def cmd_print(self, gcmd):
+        self.execute_print_job()
+        return
+    
     # --- CONTROLLER BOARD RELATED --- #
 
     def trigger_print(self):
